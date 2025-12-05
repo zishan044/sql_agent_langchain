@@ -3,6 +3,8 @@ from langchain_ollama import ChatOllama
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
 
 def main():
     llm = ChatOllama(
@@ -26,7 +28,7 @@ def main():
     db = SQLDatabase.from_uri('sqlite:///Chinook.db')
 
     # print(f"Dialect: {db.dialect}")
-    # print(f"Available tables: {db.get_usable_table_names()}")
+    print(f"Available tables: {db.get_usable_table_names()}")
     # print(f'Sample output: {db.run("SELECT * FROM Artist LIMIT 5;")}')
 
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
@@ -61,15 +63,37 @@ def main():
         top_k=5,
     )
 
-    agent = create_agent(model=llm, tools=tools, system_prompt=system_prompt)
+    agent = create_agent(
+        model=llm, 
+        tools=tools, 
+        system_prompt=system_prompt,
+        middleware=[
+            HumanInTheLoopMiddleware(
+                interrupt_on={"sql_db_query": True}, 
+                description_prefix="Tool execution pending approval",
+            )
+        ]
+    )
+
+    check_pointer = InMemorySaver()
 
     question = "Which genre on average has the longest tracks?"
+    config = {"configurable": {"thread_id": "1"}} 
 
     for step in agent.stream(
         {"messages": [{"role": "user", "content": question}]},
+        config=config,
         stream_mode="values",
     ):
-        step["messages"][-1].pretty_print()
+        if "messages" in step:
+            step["messages"][-1].pretty_print()
+        elif "__interrupt__" in step: 
+            print("INTERRUPTED:") 
+            interrupt = step["__interrupt__"][0] 
+            for request in interrupt.value["action_requests"]: 
+                print(request["description"]) 
+        else:
+            pass
 
 if __name__ == "__main__":
     main()
